@@ -180,3 +180,35 @@ describe('notify helpers', () => {
     expect(pruneHistory({ '2026-01-01': 1, '2026-07-10': 0.5 }, TODAY)).toEqual({ '2026-07-10': 0.5 });
   });
 });
+
+describe('recommend: re-seeded patches', () => {
+  const ago = (n) => new Date(Date.parse(TODAY) - n * 86_400_000).toISOString().slice(0, 10);
+  const cool = { et0In: 0.05, hiF: 55, loF: 33 };
+
+  it('adds a misting plan for fresh patches on top of the young-lawn plan', () => {
+    const rec = recommend({ days: makeDays({}, cool), today: TODAY,
+      config: config({ seedDate: ago(26), patchDate: ago(4) }) });
+    expect(rec.stage).toBe('young');
+    expect(rec.patch).toMatchObject({ age: 4, inches: 0.1, sessions: [{ minutes: 12, when: '~11am' }] });
+    const msg = formatMessage(rec);
+    expect(msg).toContain('Main lawn (young grass, day 26):');
+    expect(msg).toContain('New-seed patches (day 4): 12 min at ~11am = .10" (hose/mist just the patches).');
+  });
+
+  it('drops the patch plan once patch seed is 3 weeks old', () => {
+    const rec = recommend({ days: makeDays({}, cool), today: TODAY,
+      config: config({ seedDate: ago(26), patchDate: ago(21) }) });
+    expect(rec.patch).toBeUndefined();
+  });
+
+  it('skips patches after soaking rain too', () => {
+    const rec = recommend({ days: makeDays({ [-1]: { rainIn: 0.5 } }, cool), today: TODAY,
+      config: config({ seedDate: ago(26), patchDate: ago(4) }) });
+    expect(formatMessage(rec)).toContain('New-seed patches (day 4): skip - .50" rain yesterday');
+  });
+
+  it('ignores the patch date while the whole lawn is still germinating', () => {
+    const rec = recommend({ days: makeDays(), today: TODAY, config: config({ seedDate: ago(5), patchDate: ago(2) }) });
+    expect(rec.patch).toBeUndefined();
+  });
+});

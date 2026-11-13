@@ -85,8 +85,9 @@ function cycleSessions(inches, rate, today) {
 }
 
 function formatClock(totalMin) {
+  totalMin = Math.round(totalMin / 15) * 15;
   const h24 = Math.floor(totalMin / 60) % 24;
-  const m = Math.round(totalMin % 60);
+  const m = totalMin % 60;
   const h = ((h24 + 11) % 12) + 1;
   const ap = h24 < 12 ? 'am' : 'pm';
   return m === 0 ? `~${h}${ap}` : `~${h}:${String(m).padStart(2, '0')}${ap}`;
@@ -100,6 +101,36 @@ function formatClock(totalMin) {
  * @param {object} p.config     from loadConfig()
  */
 export function recommend({ days, today, history = {}, config }) {
+  const rec = lawnPlan({ days, today, history, config });
+  const patch = lawnStage(today, config.patchDate);
+  // Patches only matter while their seed is germinating, and only if the
+  // whole lawn isn't already on the germination schedule.
+  if (config.patchDate && patch.stage === 'germination' && rec.stage !== 'germination') {
+    const idx = days.findIndex((d) => d.date === today);
+    const t = days[idx];
+    const plan = t.hiF !== null && t.hiF < 40
+      ? { skip: 'too cold' }
+      : seedPlan(t, days[idx - 1], config.sprinklerRateInPerHr);
+    rec.patch = { age: patch.age, ...plan };
+  }
+  return rec;
+}
+
+/** Light, frequent watering that keeps a fresh seedbed's top 1/4" damp. */
+export function seedPlan(t, yesterday, rate) {
+  if (yesterday.rainIn >= 0.25) return { skip: `${fmtIn(yesterday.rainIn)} rain yesterday kept the seedbed wet` };
+  const need = Math.min(Math.max(t.et0In, 0.1), 0.3);
+  if (expectedRain(t) >= need && t.popPct >= 70) {
+    return { skip: `${t.popPct}% chance of ${fmtIn(t.rainIn)} rain today - check soil this afternoon; mist if surface dries` };
+  }
+  const n = t.hiF >= 85 ? 3 : t.hiF >= 60 ? 2 : 1;
+  const per = roundTo(need / n, 0.01);
+  const minutes = minutesFor(per, rate);
+  const sessions = startTimes(n, t).map((when) => ({ minutes, when }));
+  return { inches: per * n, sessions, reason: 'keep the top 1/4" damp so seed can germinate' };
+}
+
+function lawnPlan({ days, today, history, config }) {
   const idx = days.findIndex((d) => d.date === today);
   if (idx < 1) throw new Error(`Weather data doesn't include ${today} with history before it`);
   const t = days[idx];
@@ -118,17 +149,9 @@ export function recommend({ days, today, history = {}, config }) {
   if (t.windMph >= 20) notes.push(`windy (${Math.round(t.windMph)} mph) - water early before it picks up`);
 
   if (stage === 'germination') {
-    if (yesterday.rainIn >= 0.25) return skip(`${fmtIn(yesterday.rainIn)} rain yesterday kept the seedbed wet`);
-    const need = Math.min(Math.max(t.et0In, 0.1), 0.3);
-    if (expectedRain(t) >= need && t.popPct >= 70) {
-      return skip(`${t.popPct}% chance of ${fmtIn(t.rainIn)} rain today - check soil this afternoon; mist if surface dries`);
-    }
-    const n = t.hiF >= 85 ? 3 : t.hiF >= 60 ? 2 : 1;
-    const per = roundTo(need / n, 0.01);
-    const minutes = minutesFor(per, rate);
-    const sessions = startTimes(n, t).map((when) => ({ minutes, when }));
-    return { ...base, action: 'water', inches: per * n, sessions, notes,
-      reason: 'keep the top 1/4" damp so seed can germinate' };
+    const plan = seedPlan(t, yesterday, rate);
+    if (plan.skip) return skip(plan.skip);
+    return { ...base, action: 'water', ...plan, notes };
   }
 
   const p = STAGES[stage];
@@ -157,6 +180,15 @@ export const fmtIn = (x) => `${x.toFixed(2).replace(/^0/, '')}"`;
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 /** Short, plain-ASCII SMS (emoji would force UCS-2 and triple the segment count). */
+const sessionText = (s) => {
+  const allSame = s.every((x) => x.minutes === s[0].minutes);
+  return s.length === 1
+    ? `${s[0].minutes} min at ${s[0].when}`
+    : allSame
+      ? `${s.length}x ${s[0].minutes} min (${s.map((x) => x.when).join(', ')})`
+      : s.map((x) => `${x.minutes} min ${x.when}`).join(', ');
+};
+
 export function formatMessage(rec) {
   const [y, m, d] = rec.date.split('-').map(Number);
   const dow = DOW[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
@@ -164,17 +196,22 @@ export function formatMessage(rec) {
   const wx = `Hi ${Math.round(t.hiF)}/Lo ${Math.round(t.loF)}F, ${t.popPct}% rain chance. ` +
     `Rain past 24h: ${fmtIn(rec.weather.yesterday.rainIn)}.`;
   const head = `Lawn ${dow} ${m}/${d}:`;
-
-  if (rec.action === 'skip') return `${head} NO WATER today - ${rec.reason}. ${wx}`;
-
-  const s = rec.sessions;
-  const allSame = s.every((x) => x.minutes === s[0].minutes);
-  const plan = s.length === 1
-    ? `${s[0].minutes} min at ${s[0].when}`
-    : allSame
-      ? `${s.length}x ${s[0].minutes} min (${s.map((x) => x.when).join(', ')})`
-      : s.map((x) => `${x.minutes} min ${x.when}`).join(', ');
   const stage = rec.stage === 'established' ? '' : ` (${STAGES[rec.stage].label}, day ${rec.age})`;
   const notes = rec.notes?.length ? ` Note: ${rec.notes.join('; ')}.` : '';
-  return `${head} WATER ${plan} = ${fmtIn(rec.inches)} total${stage}. Why: ${rec.reason}. ${wx}${notes}`;
+
+  const main = rec.action === 'skip'
+    ? `NO WATER today - ${rec.reason}.`
+    : `WATER ${sessionText(rec.sessions)} = ${fmtIn(rec.inches)} total. Why: ${rec.reason}.`;
+
+  if (!rec.patch) {
+    return rec.action === 'skip'
+      ? `${head} ${main} ${wx}`
+      : `${head} ${main.replace(' total.', ` total${stage}.`)} ${wx}${notes}`;
+  }
+
+  const p = rec.patch;
+  const patch = p.skip
+    ? `skip - ${p.skip}.`
+    : `${sessionText(p.sessions)} = ${fmtIn(p.inches)} (hose/mist just the patches).`;
+  return `${head} Main lawn${stage}: ${main} New-seed patches (day ${p.age}): ${patch} ${wx}${notes}`;
 }

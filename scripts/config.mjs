@@ -19,6 +19,9 @@ export function loadConfig(env = process.env) {
     // Date the seed went down (YYYY-MM-DD). Leave blank for an established lawn.
     // Seedling rules apply for the first 6 weeks, then it switches automatically.
     seedDate: env.SEED_DATE || '',
+    // Date you last re-seeded bare patches. While that seed is germinating
+    // (3 weeks), the text adds a light misting plan for just those spots.
+    patchDate: env.PATCH_DATE || '',
 
     twilio: {
       accountSid: env.TWILIO_ACCOUNT_SID || '',

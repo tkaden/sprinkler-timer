@@ -37,6 +37,7 @@ jobs:
           SMS_TO: ${{ secrets.SMS_TO }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           SEED_DATE: ${{ vars.SEED_DATE }}
+          PATCH_DATE: ${{ vars.PATCH_DATE }}
           SPRINKLER_RATE_IN_PER_HR: ${{ vars.SPRINKLER_RATE_IN_PER_HR }}
           LAT: ${{ vars.LAT }}
           LON: ${{ vars.LON }}
