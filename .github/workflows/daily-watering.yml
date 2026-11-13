@@ -1,0 +1,55 @@
+name: Daily watering text
+
+on:
+  schedule:
+    # 11:45 UTC = 5:45am CST (winter) / 6:45am CDT (summer).
+    # GitHub may start scheduled runs 5-30 min late.
+    - cron: '45 11 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Print the message only (no text, no history update)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-watering
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Decide and send
+        env:
+          TWILIO_ACCOUNT_SID: ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
+          SMS_TO: ${{ secrets.SMS_TO }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          SEED_DATE: ${{ vars.SEED_DATE }}
+          SPRINKLER_RATE_IN_PER_HR: ${{ vars.SPRINKLER_RATE_IN_PER_HR }}
+          LAT: ${{ vars.LAT }}
+          LON: ${{ vars.LON }}
+        run: node scripts/notify.mjs ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      # The bucket model needs to know what it told you to water yesterday.
+      # These daily commits also keep GitHub from pausing the schedule after
+      # 60 days of repo inactivity.
+      - name: Save watering history
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name "sprinkler-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/history.json
+          git diff --cached --quiet || git commit -m "Watering log $(TZ=America/Chicago date +%F)"
+          git push
